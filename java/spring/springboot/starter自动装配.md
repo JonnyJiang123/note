@@ -44,7 +44,7 @@ public @interface SpringBootApplication {
 public @interface EnableAutoConfiguration {
 }
 ```
-在EnableAutoConfiguration标注了许多注解，其中最核心的注解就是`@Import(AutoConfigurationImportSelector.class)`。在执行ConfigurationClassPostProcessor的时候会解析<b>@Import</b>注解，
+在EnableAutoConfiguration标注了许多注解，其中最核心的注解就是`@Import(AutoConfigurationImportSelector.class)`。在执行ConfigurationClassParser的时候会解析<b>@Import</b>注解，
 同时解析AutoConfigurationImportSelector执行对应的import方法来进行导入
 ## AutoConfigurationImportSelector
 ```java
