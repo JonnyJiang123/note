@@ -1,0 +1,6 @@
+# 总结
+通过Import可以实现多个配置类的一次性导入，SpringBoot的自动装配也是基于此。
+# 源码分析
+## ConfigurationClassParser
+在spring解析@Configuration配置类的时候会通过ConfigurationClassParser进行解析
+org.springframework.context.annotation.ConfigurationClassParser#doProcessConfigurationClass
