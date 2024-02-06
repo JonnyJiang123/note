@@ -86,7 +86,7 @@ threadPoolExecutor.shutdown();
 通过执行ThreadPoolExecutor#submit即可提交任务。
 ThreadPoolExecutor没有实现submit，而是调用的父类`AbstractExecutorService`的submit，这是一个模板方法，由子类执行execute。
 ### AbstractExecutorService
-submit首先根据task创建了一个RunnableFuture，然后执行子类实现的execute
+submit首先根据task创建了一个RunnableFuture（FutureTask），然后执行子类实现的execute
 java.util.concurrent.AbstractExecutorService#submit(java.lang.Runnable)
 ```java
 public Future<?> submit(Runnable task) {
@@ -253,7 +253,7 @@ runWorker方法为核心的执行任务流程
 2. worker加锁（继承了AQS）
 3. 如果当前ThreadPoolExecutor就停止当前运行的线程
 4. 执行beforeExecute 任务执行前的hook
-5. 执行task
+5. 执行task(FutureTask)
 6. 执行afterExecute 任务执行后的hook，注意如果第二个参数不为空表示有异常
 7. 执行processWorkerExit 维持核心线程数
 ```java
@@ -377,6 +377,159 @@ java.util.concurrent.ThreadPoolExecutor#getTask
 ```
 ThreadPoolExecutor将work的空闲时间转为->阻塞获取task的时间. \
 注意work是从workQueue获取task的，每创建一个task都放入了workQueue。Work实现了Runnable也放入了workQueue。workQueue类型为`BlockingQueue<Runnable>`
+
+## FutureTask
+FutureTask封装了真正执行的task、thread。是work真正执行的对象。最终执行task，同时唤醒阻塞获取结果的thread
+### run
+FutureTask的run方法核心逻辑
+1. 执行task
+2. 设置执行的结果（set）
+3. 缓存阻塞等待结果的线程（Callable）（set）
+```java
+    public void run() {
+        if (state != NEW ||
+            !RUNNER.compareAndSet(this, null, Thread.currentThread()))
+            return;
+        try {
+            Callable<V> c = callable;
+            if (c != null && state == NEW) { // 如果当前状态为New
+                V result;
+                boolean ran;
+                try {
+                    result = c.call(); // 执行task
+                    ran = true;
+                } catch (Throwable ex) {
+                    result = null;
+                    ran = false;
+                    setException(ex);
+                }
+                if (ran)
+                    set(result); // 设置结果
+            }
+        } finally {
+            // runner must be non-null until state is settled to
+            // prevent concurrent calls to run()
+            runner = null;
+            // state must be re-read after nulling runner to prevent
+            // leaked interrupts
+            int s = state;
+            if (s >= INTERRUPTING)
+                handlePossibleCancellationInterrupt(s);
+        }
+    }
+```
+### set
+FutureTask的set方法：
+1. 设置当前FutureTask的状态为完成中
+2. 将执行的结果复制到outcome。后续可以通过`get`方法获取
+3. 设置完成状态
+4. 完成后的处理
+```java
+    protected void set(V v) {
+        if (STATE.compareAndSet(this, NEW, COMPLETING)) {  // 设置当前FutureTask的状态为完成中
+            outcome = v; // 将执行的结果复制到outcome。后续可以通过`get`方法获取
+            STATE.setRelease(this, NORMAL); // final state // 设置完成状态
+            finishCompletion(); // 完成后的处理
+        }
+    }
+```
+### finishCompletion
+finishCompletion为执行完成后的处理，主要为唤醒调用`get`阻塞的线程
+```java
+    private void finishCompletion() {
+        // assert state > COMPLETING;
+        for (WaitNode q; (q = waiters) != null;) {
+            if (WAITERS.weakCompareAndSet(this, q, null)) {
+                for (;;) {
+                    Thread t = q.thread;
+                    if (t != null) {
+                        q.thread = null;
+                        LockSupport.unpark(t);
+                    }
+                    WaitNode next = q.next;
+                    if (next == null)
+                        break;
+                    q.next = null; // unlink to help gc
+                    q = next;
+                }
+                break;
+            }
+        }
+
+        done();
+
+        callable = null;        // to reduce footprint
+    }
+```
+### get
+get方法用于阻塞获取结果
+1. 如果task未执行完，调用awaitDone阻塞当前线程
+2. 否则调用report获取结果
+```java
+    public V get() throws InterruptedException, ExecutionException {
+        int s = state;
+        if (s <= COMPLETING)
+            s = awaitDone(false, 0L);
+        return report(s);
+    }
+```
+### awaitDone
+awaitDone的主要流程：
+1. 创建一个WaitNode
+2. 加入FutureTask的阻塞队列waiters
+3. `LockSupport.park`挂起当前线程
+```java
+    private int awaitDone(boolean timed, long nanos)
+        throws InterruptedException {
+        long startTime = 0L;    // Special value 0L means not yet parked
+        WaitNode q = null;
+        boolean queued = false;
+        for (;;) {
+            int s = state;
+           //...
+            else if (q == null) {
+                if (timed && nanos <= 0L)
+                    return s;
+                q = new WaitNode(); // 创建一个WaitNode
+            }
+            else if (!queued)
+                queued = WAITERS.weakCompareAndSet(this, q.next = waiters, q); // 加入FutureTask的阻塞队列waiters
+            else if (timed) {
+                final long parkNanos;
+                if (startTime == 0L) { // first time
+                    startTime = System.nanoTime();
+                    if (startTime == 0L)
+                        startTime = 1L;
+                    parkNanos = nanos;
+                } else {
+                    long elapsed = System.nanoTime() - startTime;
+                    if (elapsed >= nanos) {
+                        removeWaiter(q);
+                        return state;
+                    }
+                    parkNanos = nanos - elapsed;
+                }
+                // nanoTime may be slow; recheck before parking
+                if (state < COMPLETING)
+                    LockSupport.parkNanos(this, parkNanos);
+            }
+            else
+                LockSupport.park(this); // 挂起当前线程
+        }
+    }
+```
+### report
+report用于获取结果。如果任务取消了则会报错。如果是其他的状态也会报错
+```java
+    private V report(int s) throws ExecutionException {
+        Object x = outcome;
+        if (s == NORMAL)
+            return (V)x;
+        if (s >= CANCELLED)
+            throw new CancellationException();
+        throw new ExecutionException((Throwable)x);
+    }
+```
 
 ## ctl->ThreadPoolExecutor状态
 ctl维持了整个ThreadPoolExecutor的状态，包括：当前的状态、当前的workCount。使用前三位表示状态，使用后29位表示workCounr。所以ThreadPoolExecutor理论上最大workCount=(2^29)-1
