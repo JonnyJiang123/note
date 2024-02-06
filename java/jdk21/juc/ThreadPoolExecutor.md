@@ -1,5 +1,5 @@
 # 总结
-ThreadPoolExecutor通过使用线程池里的一个线程来执行提交的task
+ThreadPoolExecutor通过使用线程池里的一个线程来执行提交的task。当任务数多的时候通过动态的创建线程到最大值来进行处理，没有任务的时候通过减少线程。
 # 实战
 ## 自定义ThreadPoolExecutor
 通过自定义ThreadPoolExecutor实现提供的hook函数来自定义功能
