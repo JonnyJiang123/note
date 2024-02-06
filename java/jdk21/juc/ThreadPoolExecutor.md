@@ -298,6 +298,7 @@ runWorker方法为核心的执行任务流程
 ```
 ## core work 保存
 processWorkerExit用于work执行完退出的处理以及核心work的维持
+### processWorkerExit
 processWorkerExit核心流程
 1. 记录当前完成的任务数，同时移除当前work
 2. 如果容器还在运行，同时当前work Count > corePoolSize 则 结束当前work
@@ -332,9 +333,11 @@ java.util.concurrent.ThreadPoolExecutor#processWorkerExit
         }
     }
 ```
+### getTask
 getTask核心逻辑：
 1. 如果ThreadPoolExecutor停止了就结束当前work
 2. 如果work > corePoolSize 同时work在keepAliveTime时间内未获取到task，则结束当前work
+3. 否则 work <= corePoolSize 会执行 `workQueue.take()`阻塞当前核心work直到有新任务。这一步就是维持核心work不结束的真正原因
 java.util.concurrent.ThreadPoolExecutor#getTask
 ```java
     private Runnable getTask() {
@@ -365,7 +368,7 @@ java.util.concurrent.ThreadPoolExecutor#getTask
             try {
                 Runnable r = timed ?
                     workQueue.poll(keepAliveTime, TimeUnit.NANOSECONDS) : // 尝试阻塞获取work，如果在指定的时间（空闲时间）未获取到就结束work
-                    workQueue.take();
+                    workQueue.take(); // 维持核心work不结束的真正原因
                 if (r != null)
                     return r;
                 timedOut = true;
