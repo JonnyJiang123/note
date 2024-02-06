@@ -379,5 +379,45 @@ ThreadPoolExecutor将work的空闲时间转为->阻塞获取task的时间. \
 注意work是从workQueue获取task的，每创建一个task都放入了workQueue。Work实现了Runnable也放入了workQueue。workQueue类型为`BlockingQueue<Runnable>`
 
 ## ctl->ThreadPoolExecutor状态
+ctl维持了整个ThreadPoolExecutor的状态，包括：当前的状态、当前的workCount。使用前三位表示状态，使用后29位表示workCounr。所以ThreadPoolExecutor理论上最大workCount=(2^29)-1
+```java
+private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
+private static final int COUNT_BITS = Integer.SIZE - 3;
+private static final int COUNT_MASK = (1 << COUNT_BITS) - 1;
 
+// runState is stored in the high-order bits
+private static final int RUNNING    = -1 << COUNT_BITS;
+private static final int SHUTDOWN   =  0 << COUNT_BITS;
+private static final int STOP       =  1 << COUNT_BITS;
+private static final int TIDYING    =  2 << COUNT_BITS;
+private static final int TERMINATED =  3 << COUNT_BITS;
+```
+### 获取workCount
+直接按位与COUNT_MASK
+```java
+private static int workerCountOf(int c)  { return c & COUNT_MASK; }
+```
+### 获取ThreadPoolExecutor状态
+```java
+private static int runStateOf(int c)     { return c & ~COUNT_MASK; }
+```
+### 判断isRunning
+```java
+    private static boolean isRunning(int c) {
+        return c < SHUTDOWN;
+    }
+```
+### 增加workCount
+通过cas实现
+```java
+    private boolean compareAndIncrementWorkerCount(int expect) {
+        return ctl.compareAndSet(expect, expect + 1);
+    }
+```
+### 减少workCount
+```java
+    private boolean compareAndDecrementWorkerCount(int expect) {
+        return ctl.compareAndSet(expect, expect - 1);
+    }
+```
 
